@@ -4,51 +4,50 @@ import { supabase } from "@/lib/supabase";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import Image from "next/image";
-import { motion } from "framer-motion"; // Impor motion dari Framer Motion
+import { motion, Variants } from "framer-motion"; // Tambahkan Variants
+import { toast } from "sonner";
+
+// Definisikan varian di luar komponen agar rapi dan hemat memori
+const containerVariants: Variants = {
+  hidden: { opacity: 0 },
+  visible: {
+    opacity: 1,
+    transition: { staggerChildren: 0.1, delayChildren: 0.1 },
+  },
+};
+
+const itemVariants: Variants = {
+  hidden: { y: 20, opacity: 0 },
+  visible: {
+    y: 0,
+    opacity: 1,
+    transition: { type: "spring", stiffness: 100, damping: 15 },
+  },
+};
 
 export default function Login() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [loading, setLoading] = useState(false); // State untuk loading
+  const [loading, setLoading] = useState(false);
   const router = useRouter();
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    setLoading(true); // Mulai loading
+    setLoading(true);
     const { error } = await supabase.auth.signInWithPassword({ email, password });
+    
     if (error) {
-      alert("Email atau Password Salah!");
+      toast.error("Email atau Password Salah!");
     } else {
+      toast.success("Berhasil masuk!");
       router.push("/dashboard");
-      router.refresh(); // Refresh halaman untuk memuat session baru
+      router.refresh();
     }
-    setLoading(false); // Selesai loading
-  };
-
-  const containerVariants = {
-    hidden: { opacity: 0 },
-    visible: {
-      opacity: 1,
-      transition: {
-        staggerChildren: 0.1,
-        delayChildren: 0.1,
-      },
-    },
-  };
-
-  const itemVariants = {
-    hidden: { y: 20, opacity: 0 },
-    visible: {
-      y: 0,
-      opacity: 1,
-      transition: { type: "spring", stiffness: 100, damping: 15 },
-    },
+    setLoading(false);
   };
 
   return (
-    <div className="relative min-h-screen bg-gradient-to-br from-gray-900 to-indigo-950 flex flex-col items-center justify-center p-8 antialiased text-white overflow-hidden">
-      
-      {/* Dekorasi Cahaya / Blob (Lebih Tenang) */}
+    <div className="relative min-h-screen bg-linear-to-br from-gray-900 to-indigo-950 flex flex-col items-center justify-center p-8 antialiased text-white overflow-hidden">
       <div className="absolute top-0 left-0 w-80 h-80 bg-indigo-500 rounded-full mix-blend-screen filter blur-3xl opacity-20"></div>
       <div className="absolute bottom-0 right-0 w-72 h-72 bg-purple-500 rounded-full mix-blend-screen filter blur-3xl opacity-20"></div>
 
@@ -60,16 +59,10 @@ export default function Login() {
       >
         <motion.div variants={itemVariants} className="text-center mb-8">
           <Link href="/">
-            <Image
-              src="/vero-logo.svg" 
-              alt="VeroApp Logo"
-              width={100}
-              height={40}
-              className="mx-auto mb-4"
-            />
+            <Image src="/vero-logo.svg" alt="VeroApp Logo" width={100} height={40} className="mx-auto mb-4" />
           </Link>
-          <h2 className="text-3xl font-bold mb-2 tracking-tight">Masuk ke VeroApp</h2>
-          <p className="text-slate-300 text-sm font-medium">Selamat datang kembali!</p>
+          <h2 className="text-3xl font-bold mb-2 tracking-tight uppercase italic">Masuk Akun</h2>
+          <p className="text-slate-400 text-sm font-medium">Selamat datang kembali di VeroApp</p>
         </motion.div>
         
         <form onSubmit={handleLogin} className="space-y-5">
@@ -77,9 +70,8 @@ export default function Login() {
             <input 
               type="email" 
               placeholder="Email Kampus" 
-              value={email} 
-              onChange={(e) => setEmail(e.target.value)} 
-              className="w-full p-4 rounded-xl bg-white/10 border border-white/20 placeholder-slate-400 text-white focus:ring-2 focus:ring-indigo-500 outline-none transition-all duration-200" 
+              className="w-full p-4 rounded-xl bg-white/10 border border-white/20 placeholder-slate-400 text-white focus:ring-2 focus:ring-indigo-500 outline-none transition-all" 
+              onChange={(e) => setEmail(e.target.value)}
               required 
             />
           </motion.div>
@@ -87,9 +79,8 @@ export default function Login() {
             <input 
               type="password" 
               placeholder="Password" 
-              value={password} 
-              onChange={(e) => setPassword(e.target.value)} 
-              className="w-full p-4 rounded-xl bg-white/10 border border-white/20 placeholder-slate-400 text-white focus:ring-2 focus:ring-indigo-500 outline-none transition-all duration-200" 
+              className="w-full p-4 rounded-xl bg-white/10 border border-white/20 placeholder-slate-400 text-white focus:ring-2 focus:ring-indigo-500 outline-none transition-all" 
+              onChange={(e) => setPassword(e.target.value)}
               required 
             />
           </motion.div>
@@ -97,22 +88,18 @@ export default function Login() {
           <motion.div variants={itemVariants}>
             <button 
               type="submit" 
-              className="w-full bg-indigo-600 text-white font-bold py-4 rounded-xl shadow-lg shadow-indigo-500/30 hover:bg-indigo-700 hover:shadow-xl hover:scale-[1.01] active:scale-[0.99] transition-all duration-200"
-              disabled={loading} // Non-aktifkan tombol saat loading
+              className="w-full bg-indigo-600 text-white font-bold py-4 rounded-xl shadow-lg hover:bg-indigo-700 transition-all disabled:opacity-50"
+              disabled={loading}
             >
-              {loading ? "Memproses..." : "Masuk Akun"}
+              {loading ? "Memproses..." : "MASUK SEKARANG"}
             </button>
           </motion.div>
         </form>
         
-        <motion.div variants={itemVariants} className="mt-8 text-center text-sm text-slate-400">
-          Belum punya akun? <Link href="/register" className="font-bold text-indigo-400 hover:underline">Daftar Sekarang</Link>
+        <motion.div variants={itemVariants} className="mt-8 text-center text-sm text-slate-400 font-bold">
+          BELUM PUNYA AKUN? <Link href="/register" className="text-indigo-400 hover:underline">DAFTAR DISINI</Link>
         </motion.div>
       </motion.div>
-
-      <footer className="absolute bottom-8 text-slate-500 text-sm z-10">
-        © {new Date().getFullYear()} VeroApp.
-      </footer>
     </div>
   );
 }
