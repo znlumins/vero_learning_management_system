@@ -67,7 +67,7 @@ function MeetingContent() {
   // --- REFS ---
   const lastPredictionTime = useRef<number>(0); 
   const drawCanvasRef = useRef<HTMLCanvasElement>(null); 
-  const requestRef = useRef<number>(); 
+  const requestRef = useRef<number>(0); 
   const gestureEnabledRef = useRef(false); 
   const modelTypeRef = useRef(modelType); 
   const recognitionRef = useRef<any>(null);
