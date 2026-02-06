@@ -75,6 +75,7 @@ function MeetingContent() {
   const lastPredictionTime = useRef<number>(0); 
   const drawCanvasRef = useRef<HTMLCanvasElement>(null); 
   const gestureEnabledRef = useRef(false); 
+  const gestureFrameId = useRef<number | null>(null);
   const modelTypeRef = useRef(modelType); 
   const recognitionRef = useRef<any>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -82,7 +83,7 @@ function MeetingContent() {
 
   useEffect(() => { modelTypeRef.current = modelType; }, [modelType]);
 
-  // --- DATA BROADCASTING (Kirim data ke semua orang di Peer) ---
+  // --- BROADCASTING ---
   const broadcastData = (data: any) => {
     Object.values(peers).forEach((p) => { if (p.conn && p.conn.open) p.conn.send(data); });
   };
@@ -108,15 +109,13 @@ function MeetingContent() {
     }
   };
 
-  // --- PEERJS LOGIC (Koneksi antar orang) ---
+  // --- PEERJS & SIGNALING ---
   const callOtherUser = (remotePeerId: string, stream: MediaStream) => {
     if (!peerInstance.current || activeCalls.current.has(remotePeerId)) return;
-
     const call = peerInstance.current.call(remotePeerId, stream);
     call.on("stream", (remoteStream: MediaStream) => {
         setPeers(prev => ({ ...prev, [remotePeerId]: { stream: remoteStream, conn: prev[remotePeerId]?.conn || null, subtitle: '' } }));
     });
-
     const conn = peerInstance.current.connect(remotePeerId);
     conn.on("open", () => {
         conn.on("data", (data: any) => handleIncomingData(remotePeerId, data));
@@ -131,16 +130,12 @@ function MeetingContent() {
       const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
       setMyStream(stream);
 
-      // Gunakan UID Supabase sebagai ID Peer agar unik
       const peer = new Peer(uid, { config: { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] } });
       peerInstance.current = peer;
 
       peer.on("open", async (id) => {
         setIsJoining(false);
-        // Daftarkan kehadiran di Supabase
         await supabase.from("meeting_participants").upsert({ room_id: roomID, user_id: uid, peer_id: id, last_seen: new Date().toISOString() });
-
-        // Cari siapa saja yang sudah ada di kamar ini
         const { data: participants } = await supabase.from("meeting_participants").select("peer_id").eq("room_id", roomID).neq("user_id", uid);
         participants?.forEach(p => callOtherUser(p.peer_id, stream));
       });
@@ -153,32 +148,25 @@ function MeetingContent() {
       peer.on("connection", (conn) => {
         conn.on("open", () => conn.on("data", (d) => handleIncomingData(conn.peer, d)));
       });
-
-    } catch (e) { toast.error("Gagal akses Kamera/Mic"); }
+    } catch (e) { toast.error("Kamera/Mic gagal diakses"); }
   };
 
-  // --- AUDIO & AI FUNCTIONS ---
-  const handleSpeak = (text: string) => {
-    if (!isTtsActive || !text) return;
-    const ut = new SpeechSynthesisUtterance(text);
-    ut.lang = 'id-ID'; window.speechSynthesis.speak(ut);
-  };
-
-  const updateMySubtitle = (text: string) => {
-    setMySubtitle(text); broadcastData({ subtitle: text });
-    setTimeout(() => { setMySubtitle(""); broadcastData({ subtitle: "" }); }, 3000);
-  };
-
+  // --- GESTURE AI RECOGNITION (FIXED) ---
   const onGestureResults = (results: any) => {
-    if (!drawCanvasRef.current) return;
-    const ctx = drawCanvasRef.current.getContext('2d');
+    const canvas = drawCanvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
     if (!ctx) return;
-    ctx.save(); ctx.clearRect(0, 0, drawCanvasRef.current.width, drawCanvasRef.current.height);
+
+    ctx.save();
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
     if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
         for (const lm of results.multiHandLandmarks) {
-            window.drawConnectors(ctx, lm, HAND_CONNECTIONS, { color: "#4f46e5", lineWidth: 5 });
-            window.drawLandmarks(ctx, lm, { color: "#ffffff", lineWidth: 2, radius: 4 });
+            window.drawConnectors(ctx, lm, HAND_CONNECTIONS, { color: "#4f46e5", lineWidth: 4 });
+            window.drawLandmarks(ctx, lm, { color: "#ffffff", lineWidth: 1, radius: 2 });
         }
+
         const now = Date.now();
         if (now - lastPredictionTime.current > 500) {
             lastPredictionTime.current = now;
@@ -186,6 +174,7 @@ function MeetingContent() {
                 let label = "";
                 const currentModel = modelTypeRef.current;
                 const landmarks = results.multiHandLandmarks;
+
                 if (currentModel === "sibi") {
                     const features = calculateDistances(landmarks[0]);
                     const scores: any = predictSibiModel(features);
@@ -196,33 +185,43 @@ function MeetingContent() {
                     label = getBestPrediction(scores, "bisindo");
                 }
                 if (label && label !== "...") updateMySubtitle(label.toUpperCase());
-            } catch (err) {}
+            } catch (err) { console.error("AI Error:", err); }
         }
     }
     ctx.restore();
   };
 
   const toggleGesture = async () => {
-    if (isGestureActive) { gestureEnabledRef.current = false; setIsGestureActive(false); }
-    else {
-        setIsGestureActive(true); gestureEnabledRef.current = true;
+    if (isGestureActive) {
+        gestureEnabledRef.current = false;
+        setIsGestureActive(false);
+        if (gestureFrameId.current) cancelAnimationFrame(gestureFrameId.current);
+    } else {
+        if (!myStream) return toast.error("Aktifkan kamera dulu");
+        setIsGestureActive(true);
+        gestureEnabledRef.current = true;
+        
         if (!window.myHandsInstance) {
             window.myHandsInstance = new window.Hands({ locateFile: (f: any) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}` });
-            window.myHandsInstance.setOptions({ maxNumHands: 2, modelComplexity: 1, minDetectionConfidence: 0.6, minTrackingConfidence: 0.6 });
+            window.myHandsInstance.setOptions({ maxNumHands: 2, modelComplexity: 1, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
             window.myHandsInstance.onResults(onGestureResults);
         }
-        const vid = document.createElement('video'); vid.srcObject = myStream; vid.autoplay = true; vid.muted = true;
+
+        const vid = document.createElement('video');
+        vid.srcObject = myStream;
+        vid.muted = true; vid.playsInline = true;
         await vid.play();
+
         const loop = async () => {
             if (!gestureEnabledRef.current) return;
-            if (window.myHandsInstance && vid.readyState >= 2) await window.myHandsInstance.send({ image: vid });
-            requestAnimationFrame(loop);
+            if (vid.readyState >= 2) await window.myHandsInstance.send({ image: vid });
+            gestureFrameId.current = requestAnimationFrame(loop);
         };
         loop();
     }
   };
 
-  // --- WHITEBOARD & SLIDE FUNCTIONS ---
+  // --- WHITEBOARD & SLIDES ---
   const clearLocalAndRemoteCanvas = () => {
     if (canvasRef.current) {
         canvasRef.current.clearCanvas();
@@ -236,7 +235,7 @@ function MeetingContent() {
       const readers = Array.from(files).map(file => new Promise<string>((res) => {
         const reader = new FileReader(); reader.onload = (e) => res(e.target?.result as string); reader.readAsDataURL(file);
       }));
-      Promise.all(readers).then(images => { setMySlides(images); setCurrentSlideIndex(0); toast.success("Slides siap."); });
+      Promise.all(readers).then(images => { setMySlides(images); setCurrentSlideIndex(0); toast.success("Slides dimuat."); });
     }
   };
 
@@ -255,6 +254,18 @@ function MeetingContent() {
     broadcastData({ type: "presentation", action: "start", image: mySlides[newIdx], index: newIdx });
   };
 
+  // --- SPEECH ---
+  const handleSpeak = (text: string) => {
+    if (!isTtsActive || !text) return;
+    const ut = new SpeechSynthesisUtterance(text);
+    ut.lang = 'id-ID'; window.speechSynthesis.speak(ut);
+  };
+
+  const updateMySubtitle = (text: string) => {
+    setMySubtitle(text); broadcastData({ subtitle: text });
+    setTimeout(() => { setMySubtitle(""); broadcastData({ subtitle: "" }); }, 3000);
+  };
+
   // --- INIT & CLEANUP ---
   useEffect(() => {
     const init = async () => {
@@ -271,6 +282,7 @@ function MeetingContent() {
         };
         recognitionRef.current = rec;
     }
+    return () => { if (user) supabase.from("meeting_participants").delete().eq("user_id", user.id); };
   }, []);
 
   const leaveMeeting = async () => { 
@@ -296,10 +308,10 @@ function MeetingContent() {
         <div className="flex items-center gap-3">
             <div className="flex bg-slate-800 p-1 rounded-xl border border-white/5">
                 {['bisindo', 'sibi'].map((m) => (
-                    <button key={m} onClick={() => setModelType(m as any)} className={`px-3 py-1 rounded-lg text-[10px] font-bold uppercase transition-all ${modelType === m ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-500'}`}>{m}</button>
+                    <button key={m} onClick={() => setModelType(m as any)} className={`px-3 py-1 rounded-lg text-[10px] font-bold uppercase transition-all ${modelType === m ? 'bg-indigo-600 text-white' : 'text-slate-500'}`}>{m}</button>
                 ))}
             </div>
-            <button onClick={() => { setIsWhiteboardOpen(!isWhiteboardOpen); setIsPresenting(false); }} className={`p-2 rounded-xl border transition-all ${isWhiteboardOpen ? 'bg-white text-black' : 'border-white/10 text-white hover:bg-white/5'}`} title="Whiteboard"><Pencil size={16} /></button>
+            <button onClick={() => { setIsWhiteboardOpen(!isWhiteboardOpen); setIsPresenting(false); }} className={`p-2 rounded-xl border transition-all ${isWhiteboardOpen ? 'bg-white text-black' : 'border-white/10 text-white hover:bg-white/5'}`}><Pencil size={16} /></button>
             <button onClick={togglePresentation} className={`flex items-center gap-2 px-4 py-1.5 rounded-xl text-[10px] font-bold uppercase transition-all border ${isPresenting ? 'bg-green-500 border-green-500 text-white' : 'border-white/10 text-white hover:bg-white/5'}`}><MonitorPlay size={16} /> {isPresenting ? "Stop" : "Presentasi"}</button>
             <input type="file" ref={fileInputRef} hidden multiple onChange={handleFileUpload} accept="image/*" />
         </div>
@@ -310,7 +322,7 @@ function MeetingContent() {
            {activePresImage ? (
                <div className="relative flex-1 flex flex-col bg-slate-50">
                   <div className="flex-1 relative p-8">
-                     <img src={activePresImage} className="w-full h-full object-contain shadow-xl" alt="Slide" />
+                     <img src={activePresImage} className="w-full h-full object-contain" alt="Slide" />
                      {(mySubtitle || peers[remotePresentation?.peerId]?.subtitle) && (
                         <div className="absolute bottom-10 left-1/2 -translate-x-1/2 bg-slate-900 text-white px-8 py-3 rounded-3xl text-2xl font-black italic shadow-2xl border-4 border-indigo-500 z-50">{mySubtitle || peers[remotePresentation?.peerId]?.subtitle}</div>
                      )}
@@ -336,15 +348,18 @@ function MeetingContent() {
                </div>
            ) : (
                <div className="flex-1 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 overflow-y-auto">
-                  <div className="relative aspect-video bg-slate-900 rounded-3xl overflow-hidden border border-white/5">
+                  <div className="relative aspect-video bg-slate-900 rounded-3xl overflow-hidden border border-white/5 group">
                      {myStream && <VideoPlayer stream={myStream} isMuted={true} />}
-                     {isGestureActive && <canvas ref={drawCanvasRef} className="absolute inset-0 w-full h-full object-cover scale-x-[-1] z-10" width={640} height={480} />}
-                     {mySubtitle && <div className="absolute bottom-6 left-1/2 -translate-x-1/2 bg-black/80 px-4 py-2 rounded-xl text-lg font-bold z-20 border border-white/10">{mySubtitle}</div>}
+                     {/* CANVAS GESTURE OVERLAY */}
+                     {isGestureActive && (
+                        <canvas ref={drawCanvasRef} className="absolute inset-0 w-full h-full object-cover scale-x-[-1] z-30 pointer-events-none" width={640} height={480} />
+                     )}
+                     {mySubtitle && <div className="absolute bottom-6 left-1/2 -translate-x-1/2 bg-black/80 px-4 py-2 rounded-xl text-lg font-bold z-40 border border-white/10">{mySubtitle}</div>}
                   </div>
                   {Object.entries(peers).map(([id, p]) => (
                     <div key={id} className="relative aspect-video bg-slate-900 rounded-3xl overflow-hidden border border-white/5">
                         <VideoPlayer stream={p.stream} />
-                        {p.subtitle && <div className="absolute bottom-6 left-1/2 -translate-x-1/2 bg-indigo-600/90 px-4 py-2 rounded-xl text-lg font-bold z-20">{p.subtitle}</div>}
+                        {p.subtitle && <div className="absolute bottom-6 left-1/2 -translate-x-1/2 bg-indigo-600/90 px-4 py-2 rounded-xl text-lg font-bold z-40">{p.subtitle}</div>}
                     </div>
                   ))}
                </div>
@@ -356,10 +371,10 @@ function MeetingContent() {
         <button onClick={() => {if(myStream) myStream.getAudioTracks()[0].enabled = !isMicOn; setIsMicOn(!isMicOn);}} className={`p-4 rounded-3xl ${isMicOn ? 'bg-slate-800' : 'bg-red-500'}`}><Mic size={20}/></button>
         <button onClick={() => {if(myStream) myStream.getVideoTracks()[0].enabled = !isCamOn; setIsCamOn(!isCamOn);}} className={`p-4 rounded-3xl ${isCamOn ? 'bg-slate-800' : 'bg-red-500'}`}><Camera size={20}/></button>
         <div className="w-px h-10 bg-white/10" />
-        <button onClick={toggleGesture} className={`p-4 rounded-3xl border ${isGestureActive ? 'bg-green-600 border-green-400 shadow-lg shadow-green-500/20' : 'bg-slate-800 border-transparent'}`}><Hand size={20}/></button>
-        <button onClick={() => { if(!isSttActive) recognitionRef.current?.start(); else recognitionRef.current?.stop(); setIsSttActive(!isSttActive); }} className={`p-4 rounded-3xl border ${isSttActive ? 'bg-red-500 border-red-400' : 'bg-slate-800 border-transparent'}`}><MessageSquareText size={20}/></button>
-        <button onClick={() => setIsTtsActive(!isTtsActive)} className={`p-4 rounded-3xl border ${isTtsActive ? 'bg-indigo-600 border-indigo-400' : 'bg-slate-800 border-transparent'}`}>{isTtsActive ? <Volume2 size={20}/> : <VolumeX size={20}/>}</button>
-        <button onClick={leaveMeeting} className="px-10 py-4 bg-red-600 hover:bg-red-700 text-white rounded-3xl font-black text-xs uppercase transition-all shadow-xl active:scale-95">Keluar</button>
+        <button onClick={toggleGesture} className={`p-4 rounded-3xl border transition-all ${isGestureActive ? 'bg-green-600 border-green-400' : 'bg-slate-800 border-transparent hover:bg-slate-700'}`}><Hand size={20}/></button>
+        <button onClick={() => { if(!isSttActive) recognitionRef.current?.start(); else recognitionRef.current?.stop(); setIsSttActive(!isSttActive); }} className={`p-4 rounded-3xl border ${isSttActive ? 'bg-red-500' : 'bg-slate-800'}`}><MessageSquareText size={20}/></button>
+        <button onClick={() => setIsTtsActive(!isTtsActive)} className={`p-4 rounded-3xl border ${isTtsActive ? 'bg-indigo-600' : 'bg-slate-800'}`}>{isTtsActive ? <Volume2 size={20}/> : <VolumeX size={20}/>}</button>
+        <button onClick={leaveMeeting} className="px-10 py-4 bg-red-600 hover:bg-red-700 text-white rounded-3xl font-black text-xs uppercase tracking-widest transition-all shadow-xl active:scale-95">Keluar</button>
       </div>
     </div>
   );
