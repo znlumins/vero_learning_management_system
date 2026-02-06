@@ -55,7 +55,7 @@ export default function PresentasiPage() {
   const isMediaPipeLoaded = useRef(false);
   const drawCanvasRef = useRef<HTMLCanvasElement>(null);
   const gestureEnabledRef = useRef(false);
-  const requestRef = useRef<number>();
+  const requestRef = useRef<number>(0);
   const lastPredictionTime = useRef<number>(0);
 
   useEffect(() => {
