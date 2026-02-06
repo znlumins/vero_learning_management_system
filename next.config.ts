@@ -1,26 +1,32 @@
-// next.config.js
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  reactStrictMode: false, // Atau biarkan true jika tidak ada masalah lain
+  reactStrictMode: false, 
   reactCompiler: true,
 
-  // --- TAMBAHKAN KONFIGURASI IMAGES DI SINI ---
   images: {
     remotePatterns: [
       {
         protocol: 'https',
-        hostname: 'images.unsplash.com', // Izinkan domain Unsplash
+        hostname: 'images.unsplash.com',
       },
-      // Tambahkan domain lain jika diperlukan, contoh:
-      // {
-      //   protocol: 'https',
-      //   hostname: 'res.cloudinary.com',
-      // },
+      // --- TAMBAHKAN INI: Agar foto profil dari Supabase bisa muncul ---
+      {
+        protocol: 'https',
+        hostname: '*.supabase.co',
+      },
     ],
-    // Alternative (jika remotePatterns tidak bekerja di versi lama):
-    // domains: ['images.unsplash.com'], 
   },
-  // ---------------------------------------------
+
+  // --- TAMBAHKAN REWRITES DI SINI ---
+  // Fungsinya: Menghubungkan Frontend Next.js ke Backend Python (api/index.py)
+  rewrites: async () => {
+    return [
+      {
+        source: "/api/:path*",
+        destination: "/api/index.py",
+      },
+    ];
+  },
 };
 
 module.exports = nextConfig;
