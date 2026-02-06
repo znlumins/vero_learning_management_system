@@ -4,7 +4,7 @@ import { supabase } from "@/lib/supabase";
 import { useRouter, useSearchParams } from "next/navigation";
 import { 
   Mic, Camera, ChevronLeft, Hand, MessageSquareText, Volume2, VolumeX, 
-  Pencil, Eraser, Trash2, MonitorPlay, ChevronRight
+  Pencil, Eraser, Trash2, MonitorPlay, ChevronRight, Loader2
 } from "lucide-react";
 import VideoPlayer from "@/components/VideoPlayer";
 import { toast } from "sonner";
@@ -12,7 +12,7 @@ import Script from 'next/script';
 import LoadingScreen from "@/components/LoadingScreen";
 import { ReactSketchCanvas, ReactSketchCanvasRef } from "react-sketch-canvas";
 
-// --- IMPORT LOGIKA CLIENT-SIDE ---
+// --- IMPORT LOGIKA AI CLIENT-SIDE ---
 import { 
   calculateDistances, 
   prepareBisindoFeatures, 
@@ -46,40 +46,43 @@ function MeetingContent() {
   const searchParams = useSearchParams();
   const roomID = searchParams.get("roomID") || "GENERAL-MEETING";
 
+  // --- STATE UTAMA ---
   const [myStream, setMyStream] = useState<MediaStream | null>(null);
   const [peers, setPeers] = useState<{ [key: string]: PeerData }>({});
-  const peerInstance = useRef<any>(null);
   const [isJoining, setIsJoining] = useState(true);
   const [isMicOn, setIsMicOn] = useState(true);
   const [isCamOn, setIsCamOn] = useState(true);
 
+  // --- STATE STUDIO & AI ---
   const [isGestureActive, setIsGestureActive] = useState(false);
   const [isSttActive, setIsSttActive] = useState(false);
   const [isTtsActive, setIsTtsActive] = useState(true);
   const [mySubtitle, setMySubtitle] = useState("");
   const [modelType, setModelType] = useState<"bisindo" | "sibi">("bisindo");
   
+  // --- STATE WHITEBOARD & PRESENTASI ---
   const [isWhiteboardOpen, setIsWhiteboardOpen] = useState(false);
   const [isEraseMode, setIsEraseMode] = useState(false);
   const canvasRef = useRef<ReactSketchCanvasRef>(null);
-  const isIncomingDrawing = useRef(false);
-
   const [isPresenting, setIsPresenting] = useState(false);
   const [remotePresentation, setRemotePresentation] = useState<any>(null);
   const [mySlides, setMySlides] = useState<string[]>([]);
   const [currentSlideIndex, setCurrentSlideIndex] = useState(0);
-  const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // --- REFS ---
+  const peerInstance = useRef<any>(null);
+  const activeCalls = useRef<Set<string>>(new Set());
   const lastPredictionTime = useRef<number>(0); 
   const drawCanvasRef = useRef<HTMLCanvasElement>(null); 
   const gestureEnabledRef = useRef(false); 
   const modelTypeRef = useRef(modelType); 
   const recognitionRef = useRef<any>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const isIncomingDrawing = useRef(false);
 
-  useEffect(() => {
-    modelTypeRef.current = modelType;
-  }, [modelType]);
+  useEffect(() => { modelTypeRef.current = modelType; }, [modelType]);
 
+  // --- DATA BROADCASTING (Kirim data ke semua orang di Peer) ---
   const broadcastData = (data: any) => {
     Object.values(peers).forEach((p) => { if (p.conn && p.conn.open) p.conn.send(data); });
   };
@@ -105,60 +108,21 @@ function MeetingContent() {
     }
   };
 
-  const clearLocalAndRemoteCanvas = () => {
-    if (canvasRef.current) {
-        canvasRef.current.clearCanvas();
-        broadcastData({ type: "whiteboard", action: "clear" });
-    }
-  };
+  // --- PEERJS LOGIC (Koneksi antar orang) ---
+  const callOtherUser = (remotePeerId: string, stream: MediaStream) => {
+    if (!peerInstance.current || activeCalls.current.has(remotePeerId)) return;
 
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (files) {
-      const readers = Array.from(files).map(file => {
-        return new Promise<string>((resolve) => {
-          const reader = new FileReader();
-          reader.onload = (e) => resolve(e.target?.result as string);
-          reader.readAsDataURL(file);
-        });
-      });
-      Promise.all(readers).then(images => {
-        setMySlides(images);
-        setCurrentSlideIndex(0);
-        toast.success(`${images.length} Slide dimuat.`);
-      });
-    }
-  };
+    const call = peerInstance.current.call(remotePeerId, stream);
+    call.on("stream", (remoteStream: MediaStream) => {
+        setPeers(prev => ({ ...prev, [remotePeerId]: { stream: remoteStream, conn: prev[remotePeerId]?.conn || null, subtitle: '' } }));
+    });
 
-  const togglePresentation = () => {
-    if (isPresenting) {
-        setIsPresenting(false);
-        broadcastData({ type: "presentation", action: "stop" });
-    } else {
-        if (mySlides.length === 0) return fileInputRef.current?.click();
-        setIsPresenting(true);
-        setRemotePresentation(null);
-        broadcastData({ type: "presentation", action: "start", image: mySlides[currentSlideIndex], index: currentSlideIndex });
-    }
-  };
-
-  const changeSlide = (dir: number) => {
-    const newIdx = (currentSlideIndex + dir + mySlides.length) % mySlides.length;
-    setCurrentSlideIndex(newIdx);
-    broadcastData({ type: "presentation", action: "start", image: mySlides[newIdx], index: newIdx });
-  };
-
-  const handleSpeak = (text: string) => {
-    if (!isTtsActive || !text) return;
-    const ut = new SpeechSynthesisUtterance(text);
-    ut.lang = 'id-ID';
-    window.speechSynthesis.speak(ut);
-  };
-
-  const updateMySubtitle = (text: string) => {
-    setMySubtitle(text);
-    broadcastData({ subtitle: text });
-    setTimeout(() => { setMySubtitle(""); broadcastData({ subtitle: "" }); }, 3000);
+    const conn = peerInstance.current.connect(remotePeerId);
+    conn.on("open", () => {
+        conn.on("data", (data: any) => handleIncomingData(remotePeerId, data));
+        setPeers(prev => ({ ...prev, [remotePeerId]: { ...prev[remotePeerId], conn } }));
+    });
+    activeCalls.current.add(remotePeerId);
   };
 
   const startMeeting = async (uid: string) => {
@@ -166,47 +130,50 @@ function MeetingContent() {
       const { default: Peer } = await import("peerjs"); 
       const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
       setMyStream(stream);
-      const peer = new Peer(undefined as any, { config: { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] } });
+
+      // Gunakan UID Supabase sebagai ID Peer agar unik
+      const peer = new Peer(uid, { config: { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] } });
       peerInstance.current = peer;
-      peer.on("open", () => setIsJoining(false));
+
+      peer.on("open", async (id) => {
+        setIsJoining(false);
+        // Daftarkan kehadiran di Supabase
+        await supabase.from("meeting_participants").upsert({ room_id: roomID, user_id: uid, peer_id: id, last_seen: new Date().toISOString() });
+
+        // Cari siapa saja yang sudah ada di kamar ini
+        const { data: participants } = await supabase.from("meeting_participants").select("peer_id").eq("room_id", roomID).neq("user_id", uid);
+        participants?.forEach(p => callOtherUser(p.peer_id, stream));
+      });
+
       peer.on("call", (call) => {
         call.answer(stream);
         call.on("stream", (s) => setPeers(prev => ({ ...prev, [call.peer]: { stream: s, conn: prev[call.peer]?.conn || null, subtitle: '' } })));
-        const conn = peer.connect(call.peer);
-        conn.on("open", () => {
-            conn.on("data", (d) => handleIncomingData(call.peer, d));
-            setPeers(prev => ({ ...prev, [call.peer]: { ...prev[call.peer], conn } }));
-        });
       });
-      peer.on("connection", (conn) => conn.on("open", () => conn.on("data", (d) => handleIncomingData(conn.peer, d))));
-    } catch (e) { router.push("/dashboard/diskusi"); }
+
+      peer.on("connection", (conn) => {
+        conn.on("open", () => conn.on("data", (d) => handleIncomingData(conn.peer, d)));
+      });
+
+    } catch (e) { toast.error("Gagal akses Kamera/Mic"); }
   };
 
-  useEffect(() => {
-    const init = async () => {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) return router.push("/login");
-      setUser(user);
-      startMeeting(user.id);
-    };
-    init();
-    if (SpeechRecognition) {
-        const rec = new SpeechRecognition();
-        rec.continuous = true; rec.interimResults = true; rec.lang = 'id-ID';
-        rec.onresult = (e: any) => {
-            let t = ''; for (let i = e.resultIndex; i < e.results.length; ++i) t += e.results[i][0].transcript;
-            if (t) updateMySubtitle(t);
-        };
-        recognitionRef.current = rec;
-    }
-  }, []);
+  // --- AUDIO & AI FUNCTIONS ---
+  const handleSpeak = (text: string) => {
+    if (!isTtsActive || !text) return;
+    const ut = new SpeechSynthesisUtterance(text);
+    ut.lang = 'id-ID'; window.speechSynthesis.speak(ut);
+  };
+
+  const updateMySubtitle = (text: string) => {
+    setMySubtitle(text); broadcastData({ subtitle: text });
+    setTimeout(() => { setMySubtitle(""); broadcastData({ subtitle: "" }); }, 3000);
+  };
 
   const onGestureResults = (results: any) => {
     if (!drawCanvasRef.current) return;
     const ctx = drawCanvasRef.current.getContext('2d');
     if (!ctx) return;
-    ctx.save(); 
-    ctx.clearRect(0, 0, drawCanvasRef.current.width, drawCanvasRef.current.height);
+    ctx.save(); ctx.clearRect(0, 0, drawCanvasRef.current.width, drawCanvasRef.current.height);
     if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
         for (const lm of results.multiHandLandmarks) {
             window.drawConnectors(ctx, lm, HAND_CONNECTIONS, { color: "#4f46e5", lineWidth: 5 });
@@ -221,17 +188,15 @@ function MeetingContent() {
                 const landmarks = results.multiHandLandmarks;
                 if (currentModel === "sibi") {
                     const features = calculateDistances(landmarks[0]);
-                    // FIX: Tambahkan : any di sini
                     const scores: any = predictSibiModel(features);
                     label = getBestPrediction(scores, "sibi");
                 } else {
                     const features = prepareBisindoFeatures(landmarks);
-                    // FIX: Tambahkan : any di sini
                     const scores: any = predictBisindoModel(features);
                     label = getBestPrediction(scores, "bisindo");
                 }
                 if (label && label !== "...") updateMySubtitle(label.toUpperCase());
-            } catch (err) { console.error("AI Error:", err); }
+            } catch (err) {}
         }
     }
     ctx.restore();
@@ -257,7 +222,59 @@ function MeetingContent() {
     }
   };
 
-  const leaveMeeting = () => { 
+  // --- WHITEBOARD & SLIDE FUNCTIONS ---
+  const clearLocalAndRemoteCanvas = () => {
+    if (canvasRef.current) {
+        canvasRef.current.clearCanvas();
+        broadcastData({ type: "whiteboard", action: "clear" });
+    }
+  };
+
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (files) {
+      const readers = Array.from(files).map(file => new Promise<string>((res) => {
+        const reader = new FileReader(); reader.onload = (e) => res(e.target?.result as string); reader.readAsDataURL(file);
+      }));
+      Promise.all(readers).then(images => { setMySlides(images); setCurrentSlideIndex(0); toast.success("Slides siap."); });
+    }
+  };
+
+  const togglePresentation = () => {
+    if (isPresenting) { setIsPresenting(false); broadcastData({ type: "presentation", action: "stop" }); }
+    else {
+        if (mySlides.length === 0) return fileInputRef.current?.click();
+        setIsPresenting(true); setRemotePresentation(null);
+        broadcastData({ type: "presentation", action: "start", image: mySlides[currentSlideIndex], index: currentSlideIndex });
+    }
+  };
+
+  const changeSlide = (dir: number) => {
+    const newIdx = (currentSlideIndex + dir + mySlides.length) % mySlides.length;
+    setCurrentSlideIndex(newIdx);
+    broadcastData({ type: "presentation", action: "start", image: mySlides[newIdx], index: newIdx });
+  };
+
+  // --- INIT & CLEANUP ---
+  useEffect(() => {
+    const init = async () => {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return router.push("/login");
+      setUser(user); startMeeting(user.id);
+    };
+    init();
+    if (SpeechRecognition) {
+        const rec = new SpeechRecognition(); rec.continuous = true; rec.interimResults = true; rec.lang = 'id-ID';
+        rec.onresult = (e: any) => {
+            let t = ''; for (let i = e.resultIndex; i < e.results.length; ++i) t += e.results[i][0].transcript;
+            if (t) updateMySubtitle(t);
+        };
+        recognitionRef.current = rec;
+    }
+  }, []);
+
+  const leaveMeeting = async () => { 
+      if (user) await supabase.from("meeting_participants").delete().eq("user_id", user.id);
       if (myStream) myStream.getTracks().forEach(t => t.stop());
       window.location.href = "/dashboard/diskusi"; 
   };
@@ -270,6 +287,7 @@ function MeetingContent() {
     <div className="flex flex-col h-screen bg-slate-950 font-sans text-white overflow-hidden">
       <Script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" strategy="afterInteractive" />
       <Script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" strategy="afterInteractive" />
+      
       <header className="h-14 px-6 bg-slate-900 border-b border-white/10 flex items-center justify-between z-50">
         <div className="flex items-center gap-4">
           <button onClick={leaveMeeting} className="p-2 hover:bg-white/10 rounded-full"><ChevronLeft size={20} /></button>
@@ -281,11 +299,12 @@ function MeetingContent() {
                     <button key={m} onClick={() => setModelType(m as any)} className={`px-3 py-1 rounded-lg text-[10px] font-bold uppercase transition-all ${modelType === m ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-500'}`}>{m}</button>
                 ))}
             </div>
-            <button onClick={() => { setIsWhiteboardOpen(!isWhiteboardOpen); setIsPresenting(false); }} className={`p-2 rounded-xl border transition-all ${isWhiteboardOpen ? 'bg-white text-black' : 'border-white/10 text-white hover:bg-white/5'}`}><Pencil size={16} /></button>
+            <button onClick={() => { setIsWhiteboardOpen(!isWhiteboardOpen); setIsPresenting(false); }} className={`p-2 rounded-xl border transition-all ${isWhiteboardOpen ? 'bg-white text-black' : 'border-white/10 text-white hover:bg-white/5'}`} title="Whiteboard"><Pencil size={16} /></button>
             <button onClick={togglePresentation} className={`flex items-center gap-2 px-4 py-1.5 rounded-xl text-[10px] font-bold uppercase transition-all border ${isPresenting ? 'bg-green-500 border-green-500 text-white' : 'border-white/10 text-white hover:bg-white/5'}`}><MonitorPlay size={16} /> {isPresenting ? "Stop" : "Presentasi"}</button>
             <input type="file" ref={fileInputRef} hidden multiple onChange={handleFileUpload} accept="image/*" />
         </div>
       </header>
+
       <div className="flex-1 flex overflow-hidden p-4 gap-4 relative">
         <div className={`flex-1 transition-all duration-700 flex flex-col ${activePresImage || isWhiteboardOpen ? 'bg-white rounded-[40px] shadow-2xl overflow-hidden text-slate-900' : ''}`}>
            {activePresImage ? (
@@ -316,7 +335,7 @@ function MeetingContent() {
                   <ReactSketchCanvas ref={canvasRef} strokeColor="#4f46e5" strokeWidth={4} onStroke={() => { if(!isIncomingDrawing.current) canvasRef.current?.exportPaths().then(p => broadcastData({ type: 'whiteboard', action: 'draw', paths: p })); }} />
                </div>
            ) : (
-               <div className="flex-1 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+               <div className="flex-1 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 overflow-y-auto">
                   <div className="relative aspect-video bg-slate-900 rounded-3xl overflow-hidden border border-white/5">
                      {myStream && <VideoPlayer stream={myStream} isMuted={true} />}
                      {isGestureActive && <canvas ref={drawCanvasRef} className="absolute inset-0 w-full h-full object-cover scale-x-[-1] z-10" width={640} height={480} />}
@@ -325,25 +344,22 @@ function MeetingContent() {
                   {Object.entries(peers).map(([id, p]) => (
                     <div key={id} className="relative aspect-video bg-slate-900 rounded-3xl overflow-hidden border border-white/5">
                         <VideoPlayer stream={p.stream} />
-                        {p.subtitle && <div className="absolute bottom-6 left-1/2 -translate-x-1/2 bg-indigo-600/90 px-4 py-2 rounded-xl text-lg font-bold">{p.subtitle}</div>}
+                        {p.subtitle && <div className="absolute bottom-6 left-1/2 -translate-x-1/2 bg-indigo-600/90 px-4 py-2 rounded-xl text-lg font-bold z-20">{p.subtitle}</div>}
                     </div>
                   ))}
                </div>
            )}
         </div>
       </div>
+
       <div className="h-20 bg-slate-950 border-t border-white/5 flex items-center justify-center gap-4 md:gap-8 shrink-0 z-50">
-        <div className="flex gap-2">
-            <button onClick={() => {if(myStream) myStream.getAudioTracks()[0].enabled = !isMicOn; setIsMicOn(!isMicOn);}} className={`p-4 rounded-3xl ${isMicOn ? 'bg-slate-800' : 'bg-red-500'}`}><Mic size={20}/></button>
-            <button onClick={() => {if(myStream) myStream.getVideoTracks()[0].enabled = !isCamOn; setIsCamOn(!isCamOn);}} className={`p-4 rounded-3xl ${isCamOn ? 'bg-slate-800' : 'bg-red-500'}`}><Camera size={20}/></button>
-        </div>
+        <button onClick={() => {if(myStream) myStream.getAudioTracks()[0].enabled = !isMicOn; setIsMicOn(!isMicOn);}} className={`p-4 rounded-3xl ${isMicOn ? 'bg-slate-800' : 'bg-red-500'}`}><Mic size={20}/></button>
+        <button onClick={() => {if(myStream) myStream.getVideoTracks()[0].enabled = !isCamOn; setIsCamOn(!isCamOn);}} className={`p-4 rounded-3xl ${isCamOn ? 'bg-slate-800' : 'bg-red-500'}`}><Camera size={20}/></button>
         <div className="w-px h-10 bg-white/10" />
-        <div className="flex gap-2">
-            <button onClick={toggleGesture} className={`p-4 rounded-3xl border ${isGestureActive ? 'bg-green-600 border-green-400' : 'bg-slate-800 border-transparent'}`}><Hand size={20}/></button>
-            <button onClick={() => { if(!isSttActive) recognitionRef.current?.start(); else recognitionRef.current?.stop(); setIsSttActive(!isSttActive); }} className={`p-4 rounded-3xl border ${isSttActive ? 'bg-red-500 border-red-400' : 'bg-slate-800 border-transparent'}`}><MessageSquareText size={20}/></button>
-            <button onClick={() => setIsTtsActive(!isTtsActive)} className={`p-4 rounded-3xl border ${isTtsActive ? 'bg-indigo-600 border-indigo-400' : 'bg-slate-800 border-transparent'}`}>{isTtsActive ? <Volume2 size={20}/> : <VolumeX size={20}/>}</button>
-        </div>
-        <button onClick={leaveMeeting} className="px-10 py-4 bg-red-600 hover:bg-red-700 text-white rounded-3xl font-black text-xs uppercase tracking-widest transition-all">Keluar</button>
+        <button onClick={toggleGesture} className={`p-4 rounded-3xl border ${isGestureActive ? 'bg-green-600 border-green-400 shadow-lg shadow-green-500/20' : 'bg-slate-800 border-transparent'}`}><Hand size={20}/></button>
+        <button onClick={() => { if(!isSttActive) recognitionRef.current?.start(); else recognitionRef.current?.stop(); setIsSttActive(!isSttActive); }} className={`p-4 rounded-3xl border ${isSttActive ? 'bg-red-500 border-red-400' : 'bg-slate-800 border-transparent'}`}><MessageSquareText size={20}/></button>
+        <button onClick={() => setIsTtsActive(!isTtsActive)} className={`p-4 rounded-3xl border ${isTtsActive ? 'bg-indigo-600 border-indigo-400' : 'bg-slate-800 border-transparent'}`}>{isTtsActive ? <Volume2 size={20}/> : <VolumeX size={20}/>}</button>
+        <button onClick={leaveMeeting} className="px-10 py-4 bg-red-600 hover:bg-red-700 text-white rounded-3xl font-black text-xs uppercase transition-all shadow-xl active:scale-95">Keluar</button>
       </div>
     </div>
   );
