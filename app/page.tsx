@@ -118,7 +118,7 @@ export default function LandingPage() {
             <h2 className="text-[10px] font-black text-indigo-600 uppercase tracking-[0.4em] mb-4">Vero Definition</h2>
             <h3 className="text-4xl font-black mb-6 uppercase italic tracking-tight text-slate-900">Apa itu <span className="text-indigo-600">Vero?</span></h3>
             <p className="text-slate-500 leading-relaxed mb-8 text-lg">
-              <span className="font-bold text-slate-900">Vero</span> (Visual, Expression, Recognition, and Openness) adalah ekosistem digital akademik yang dirancang untuk mendukung inklusivitas total. Kami menggunakan AI untuk memastikan teman tuli dan tunawicara dapat berkolaborasi setara dalam ruang kelas digital.
+              <span className="font-bold text-slate-900">Vero</span> (Visual, Recognition, and Openness) adalah ekosistem digital akademik yang dirancang untuk mendukung inklusivitas total. Kami menggunakan AI untuk memastikan teman tuli dan tunawicara dapat berkolaborasi setara dalam ruang kelas digital.
             </p>
             
             <div className="space-y-4">
